@@ -1,15 +1,12 @@
-```plantuml
+
 @startuml
 a->b
 @enduml
-```
 
-```mermaid
+
 sequenceDiagram
   A-->B: Works!
-```
 
-```mermaid
 %% Example of sequence diagram
   sequenceDiagram
     Alice->>Bob: Hello Bob, how are you?
@@ -22,4 +19,3 @@ sequenceDiagram
     opt Extra response
         Bob->>Alice: Thanks for asking
     end
-```
