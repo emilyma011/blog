@@ -1,0 +1,1 @@
+If the file in subdirectory could be pressed in gitpress.io
