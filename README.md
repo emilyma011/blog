@@ -4,8 +4,8 @@ Another：https://emilyma011.github.io/blog/
 MainPage： https://emilyma011.github.io/doc
 
 ## kafka
-* [kafka_design](./kafka/kafka_design.md)
+* [kafka_design](./kafka_design.md)
 
 ## markdown
-* [plantuml](./markdown/plantuml.md)
+* [plantuml](./plantuml.md)
 
