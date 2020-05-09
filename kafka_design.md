@@ -101,24 +101,112 @@
     ```
 
     通过 ZooKeeper 客户端登录 ZooKeeper 查看目录结构，执行以下命令:
-    >zkCli.sh -server server 1:2181 #登录 ZooKeeper     
+    >zkCli.sh -server 127.0.0.1:2181 #登录 ZooKeeper     
     ls / #查看 ZooKeeper 目录结构   
-    ls /brokers/ ids 输出 [1, 2, 3]
+    ls /brokers/ids 输出 [1, 2, 3]
 
     由/brokers/ids 节点存储的元数据可知， 3台机器的 Kafka 均已正常己启动。
     
-```
 ### kafka Demo
 
-创建拥有副本的topic
+#### normal Test
+* 创建一个拥有3个副本的topic:
 
-正常的生产、消费消息
+  ```
+  [root@centos7g kafka]# kafka-topics.sh --create --zookeeper 127.0.0.1:2181 --replication-factor 3 --partitions 1 --topic my-replicated-topic
+  Created topic "my-replicated-topic".
+  [root@centos7g kafka]# 
+  [root@centos7g kafka]# kafka-topics.sh --list --zookeeper 127.0.0.1:2181
+  my-replicated-topic
 
-kill leader节点
+  ```
 
-正常消费消息
-```
+  现在我们搭建了一个集群，获取节点信息：
+  ```
+  [root@centos7g bin]# kafka-topics.sh --describe --zookeeper 127.0.0.1:2181 --topic my-replicated-topic
+  Topic:my-replicated-topic	PartitionCount:1	ReplicationFactor:3	Configs:
+    Topic: my-replicated-topic	Partition: 0	Leader: 753	Replicas: 753,751,752	Isr: 753,751,752
+  [root@centos7g bin]# 
+  ```
+  - Leader: 负责处理消息的读和写，leader是从所有节点中随机选择的.
+  - Replicas：列出了所有的副本节点，不管节点是否在服务中.
+  - Isr：是正在服务中的节点.
 
+  在我们的例子中，节点753是作为leader运行。
+
+* 修改topic过期时间
+  默认是7天 修改为3天
+  ```
+  kafka-topics.sh --zookeeper 127.0.0.1:2181 -topic my-replicated-topic --alter --config retention.ms=259200000
+  ```
+  
+* 往topic发送消息：
+  ```
+  kafka-console-producer.sh --broker-list 10.200.195.75:9092 --topic my-replicated-topic
+
+  >1
+  >2
+  >test1
+  >4
+  ```
+
+* 消费这些消息：
+  ```
+  kafka-console-consumer.sh --bootstrap-server 10.200.195.75:9092 --from-beginning --topic my-replicated-topic
+
+  1
+  2
+  test1
+  4
+  ```
+
+#### 容错test
+
+* 获取节点信息
+  
+  kafka-topics.sh --describe --zookeeper 127.0.0.1:2181 --topic my-replicated-topic
+
+  ```
+  [root@centos7g local]# kafka-topics.sh --describe --zookeeper 127.0.0.1:2181 --topic my-replicated-topic
+  Topic:my-replicated-topic	PartitionCount:1	ReplicationFactor:3	Configs:retention.ms=259200000
+    Topic: my-replicated-topic	Partition: 0	Leader: 753	Replicas: 753,751,752	Isr: 753,751,752
+  ```
+
+* kill leader
+
+  broker 753 作为leader运行，现在kill掉：
+  ```
+  [root@centos7g local]# jps
+  3056 ConsoleConsumer
+  10692 QuorumPeerMain
+  53318 Kafka
+  4566 Jps
+  52780 Kafka
+  99980 ConsoleProducer
+  4207 Kafka
+
+  [root@centos7g local]# kill -9 53318
+  ```
+
+  现在leader为752
+
+  ```
+  [root@centos7g local]# kafka-topics.sh --describe --zookeeper 127.0.0.1:2181 --topic my-replicated-topic
+  Topic:my-replicated-topic	PartitionCount:1	ReplicationFactor:3	Configs:retention.ms=259200000
+	Topic: my-replicated-topic	Partition: 0	Leader: 752	Replicas: 753,751,752	Isr: 752,751
+  ```
+
+* 消费消息
+
+  虽然最初负责续写消息的leader down掉了，但之前的消息还是可以消费的：
+
+  ```
+  [root@centos7g local]# kafka-console-consumer.sh --bootstrap-server 10.200.195.75:9092 --from-beginning --topic my-replicated-topic
+  1
+  2
+  test1
+  4
+  ```
 
 
 
@@ -144,39 +232,6 @@ http://kafka.apache.org/documentation/#design
 >常用参数，常用场景
 >【扩展：demo】
 
-
-
-```
-
-### 配额
-（消费权重）
-
-## operation
-多数据中心
-
-### 管理
-节点管理，起停
-topic的管理
-多集群的管理
-
-### 监控
-http://kafka.apache.org/documentation/#monitoring
-
-### 流式计算
-大数据领域
-其中一个概念：并行计算
-
-
-【扩展】
-
-kafka-》es
-kafka stream
-
-* 持续输入
-* 持续输出
-
-mysql-> kafaka ->es
-```
 
 
 
