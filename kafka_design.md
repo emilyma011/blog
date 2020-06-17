@@ -4,7 +4,13 @@
 
 数据流转、配置
 
+## kafka的历史
 
+Kafka是为了解决LinkedIn数据管道问题应运而生的。它的设计目的是提供一个高性能的消息系统，可以处理多种数据类型，并能够实时提供纯净且结构优化的用户活动数据和系统度量指标。
+
+Kafka最初是LinkedIn的一个内部基础设施系统。目的不只是开发一个能够存储数据的系统，而是把数据看成是持续变化和不断增长的流。一开始被用在社交网络的实时应用和数据流中，现在已经成为下一代数据架构的基础。
+
+，后成为Apache的一部分，
 
 ## kafka使用
 ### Zookeeper安装
@@ -212,7 +218,179 @@
 
 ## Design
 
-http://kafka.apache.org/documentation/#design
+### 全景图
+
+```plantuml
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+rectangle kafka集群 {
+left to right direction 
+  rectangle Broker1 {
+  rectangle topicA {
+    rectangle partitionA {
+      rectangle segment0 {
+        card 00000000000000000000.index
+        card 00000000000000000000.log
+        00000000000000000000.index -[hidden]->00000000000000000000.log
+      }
+      rectangle segment1 {
+        rectangle 00000000000000170410.index {
+          note "offset:170411" as N1
+          card "1: 0" as index1
+          card "3: 348" as index3
+          card "4: 476" as index4
+          card "8 1325" as index8
+
+          N1-left->index1
+        }
+        rectangle 00000000000000170410.log {
+          card "Message170411 0" as message170411
+          card "Message170412 142" as message170412
+          card "Message170413 348" as message170413
+          card "Message170414 476" as message170414
+          card "Message170415 792" as message170415
+          card "Message170416 1022" as message170416
+          card "Message170417 1153" as message170417
+          card "Message170418 1325" as message170418
+          
+        }
+      }
+      index1 --> message170411
+      index3 --> message170413
+      index4 --> message170414
+      index8 --> message170418
+
+      message170411 -[hidden]left->message170412
+      message170412-[hidden]left->message170413
+      message170413-[hidden]left->message170414
+      message170414-[hidden]left->message170415
+      message170415-[hidden]left->message170416
+      message170416-[hidden]left->message170417
+      message170417-[hidden]left->message170418
+
+    }
+    card partitionB
+  }
+  rectangle topicB {
+  }
+  }
+  rectangle Broker2 {
+  }
+  rectangle Broker3 {
+  }
+
+}
+
+card 生产者 as producter
+card 消费者 as consumer
+producter --> Broker1
+producter -> Broker2
+consumer -up-> Broker1
+consumer -up-> Broker2
+
+
+      
+
+@enduml
+```
+
+AR：Assigned Replicas，所有的副本（replicas）统称。
+ISR：是AR中的一个子集，由leader维护ISR列表，‘延迟时间’和‘延迟条数’任意一个超过阈值都会把follower剔除出ISR。
+OSR：Outof-Sync Replicas，包含从ISR中剔除的，以及新加入的follower。
+
+AR=ISR+OSR
+
+
+
+HW和LEO。这里先介绍下LEO，LogEndOffset的缩写，表示每个partition的log最后一条Message的位置。HW是HighWatermark的缩写，是指consumer能够看到的此partition的位置，这个涉及到多副本的概念，这里先提及一下，下节再详表。
+
+
+取一个partition对应的ISR中最小的LEO作为HW，consumer最多只能消费到HW所在的位置。另外每个replica都有HW,leader和follower各自负责更新自己的HW的状态。
+
+`Q:HW是针对replica说的？那怎么会说从ISR中选取最小的？`
+
+
+### 关键流程 
+#### 生产
+#### 消费者过程
+----------10min
+### 数据存取
+针对的性能优化
+
+数据存取使用cache，因为顺序写入性能远远大于随机写入
+
+对象内存开销是数据的两倍，通过存储紧凑的数据结构而不是独立的对象
+pagecache
+
+>受这些因素影响，相比于维护 in-memory cache 或者其他结构，使用文件系统和 pagecache 显得更有优势--我们可以通过自动访问所有空闲内存将可用缓存的容量至少翻倍，并且通过存储紧凑的字节结构而不是独立的对象，有望将缓存容量再翻一番。 这样使得32GB的机器缓存容量可以达到28-30GB,并且不会产生额外的 GC 负担。此外，即使服务重新启动，缓存依旧可用，而 in-process cache 则需要在内存中重建(重建一个10GB的缓存可能需要10分钟)，否则进程就要从 cold cache 的状态开始(这意味着进程最初的性能表现十分糟糕)。 这同时也极大的简化了代码，因为所有保持 cache 和文件系统之间一致性的逻辑现在都被放到了 OS 中，这样做比一次性的进程内缓存更准确、更高效。如果你的磁盘使用更倾向于顺序读取，那么 read-ahead 可以有效的使用每次从磁盘中读取到的有用数据预先填充 cache。
+
+>这里给出了一个非常简单的设计：相比于维护尽可能多的 in-memory cache，并且在空间不足的时候匆忙将数据 flush 到文件系统，我们把这个过程倒过来。所有数据一开始就被写入到文件系统的持久化日志中，而不用在 cache 空间不足的时候 flush 到磁盘。实际上，这表明数据被转移到了内核的 pagecache 中。
+
+* 数据结构
+
+>消息系统使用的持久化数据结构通常是和 BTree 相关联的消费者队列或者其他用于存储消息源数据的通用随机访问数据结构。
+>BTree 是最通用的数据结构，可以在消息系统能够支持各种事务性和非事务性语义。 虽然 BTree 的操作复杂度是 O(log N)，但成本也相当高。通常我们认为 O(log N) 基本等同于常数时间，但这条在磁盘操作中不成立。磁盘寻址是每10ms一跳，并且每个磁盘同时只能执行一次寻址，因此并行性受到了限制。 因此即使是少量的磁盘寻址也会很高的开销。由于存储系统将非常快的cache操作和非常慢的物理磁盘操作混合在一起，当数据随着 fixed cache 增加时，可以看到树的性能通常是非线性的——比如数据翻倍时性能下降不只两倍
+
+>持久化队列可以建立在简单的读取和向文件后追加两种操作之上，这和日志解决方案相同。这种架构的优点在于所有的操作复杂度都是O(1)，而且读操作不会阻塞写操作，读操作之间也不会互相影响。
+
+### 性能优化
+#### IO
+#### 零拷贝（Linux用户态和内核态）10min
+大量的小型 I/O 操作，以及过多的字节拷贝。
+  - 大量的小型 I/O 操作
+  为了避免这种情况，我们的协议是建立在一个 “消息块” 的抽象基础上，合理将消息分组。 这使得网络请求将多个消息打包成一组，而不是每次发送一条消息，从而使整组消息分担网络中往返的开销。Consumer 每次获取多个大型有序的消息块，并由服务端 依次将消息块一次加载到它的日志中。
+
+
+  - 过多的字节拷贝
+  producer ，broker 和 consumer 都共享的标准化的二进制消息格式，这样数据块不用修改就能在他们之间传递。broker 维护的消息日志本身就是一个文件目录，每个文件都由一系列以相同格式写入到磁盘的消息集合组成，这种写入格式被 producer 和 consumer 共用。保持这种通用格式可以对一些很重要的操作进行优化: 持久化日志块的网络传输。
+  使用 sendfile 方法，可以允许操作系统将数据从 pagecache 直接发送到网络，这样避免重新复制数据。所以这种优化方式，只需要最后一步的copy操作，将数据复制到 NIC 缓冲区。
+  **sendfile**
+  **使用上面提交的 zero-copy（零拷贝）** https://developer.ibm.com/technologies/java/
+  pagecache 和 sendfile 的组合使用意味着，在一个kafka集群中，大多数 consumer 消费时，您将看不到磁盘上的读取活动，因为数据将完全由缓存提供。
+
+* 压缩
+Kafka 以高效的批处理格式支持一批消息可以压缩在一起发送到服务器。这批消息将以压缩格式写入，并且在日志中保持压缩，只会在 consumer 消费时解压缩。
+
+Kafka 支持 GZIP，Snappy 和 LZ4 压缩协议，更多有关压缩的资料参看 https://cwiki.apache.org/confluence/display/KAFKA/Compression。
+
+-----30min----
+
+### 流程设计
+
+#### 生产者
+* 负载均衡
+* 缓存：详见[配置](http://kafka.apachecn.org/documentation.html#producerconfigs)
+
+#### 消费者
+pull-based 系统有一个很好的特性， 那就是当 consumer 速率落后于 producer 时，可以在适当的时间赶上来。还可以通过使用某种 backoff 协议来减少这种现象：即 consumer 可以通过 backoff 表示它已经不堪重负了，然而通过获得负载情况来充分使用 consumer（但永远不超载）
+
+简单的 pull-based 系统的不足之处在于：如果 broker 中没有数据，consumer 可能会在一个紧密的循环中结束轮询，实际上 busy-waiting 直到数据到来。为了避免 busy-waiting，我们在 pull 请求中加入参数，使得 consumer 在一个“long pull”中阻塞等待，直到数据到来（还可以选择等待给定字节长度的数据来确保传输长度）。
+
+#### 消费者的位置
+
+offset的设计
+group/comsumer
+
+要让 broker 和 consumer 就被消费的数据保持一致性。
+许多消息系统增加了确认机制：即当消息被发送出去的时候，消息仅被标记为sent 而不是 consumed；然后 broker 会等待一个来自 consumer 的特定确认，再将消息标记为consumed。这个策略修复了消息丢失的问题，但也产生了新问题。 首先，如果 consumer 处理了消息但在发送确认之前出错了，那么该消息就会被消费两次。第二个是关于性能的，现在 broker 必须为每条消息保存多个状态（首先对其加锁，确保该消息只被发送一次，然后将其永久的标记为 consumed，以便将其移除）。 还有更棘手的问题要处理，比如如何处理已经发送但一直得不到确认的消息。
+
+Kafka 使用完全不同的方式解决消息丢失问题。Kafka的 topic 被分割成了一组完全有序的 partition，其中每一个 partition 在任意给定的时间内只能被每个订阅了这个 topic 的 consumer 组中的一个 consumer 消费。这意味着 partition 中 每一个 consumer 的位置仅仅是一个数字，即下一条要消费的消息的offset。这使得被消费的消息的状态信息相当少，每个 partition 只需要一个数字。这个状态信息还可以作为周期性的 checkpoint。这以非常低的代价实现了和消息确认机制等同的效果。
+consumer 可以回退到之前的 offset 来再次消费之前的数据，这个操作违反了队列的基本原则，但事实证明对大多数 consumer 来说这是一个必不可少的特性。
+
+
+
+在 Hadoop 的应用场景中，我们通过将数据加载分配到多个独立的 map 任务来实现并行化，每一个 map 任务负责一个 node/topic/partition，从而达到充分并行化。
+
+
+### 消息交付语义
+* 幂等
+从 0.11.0.0 版本开始，Kafka producer新增了幂等性的传递选项，该选项保证重传不会在 log 中产生重复条目。 为实现这个目的, broker 给每个 producer 都分配了一个 ID ，并且 producer 给每条被发送的消息分配了一个序列号来避免产生重复的消息。 
+
+
+
+### 权限
 
 更系统化，以入门为基础
 
@@ -231,11 +409,15 @@ http://kafka.apache.org/documentation/#design
 >给出建议配置
 >常用参数，常用场景
 >【扩展：demo】
+offsets.topic.replication.factor 副本个数：大小设置为大于1，比如3。 
+两个维度判断follower是否活跃
+  延迟时间replica.lag.time.max.ms
+  延迟条数replica.lag.max.messages
 
-
-
+http://kafka.apachecn.org/documentation.html#design
 
 
 ## Reference
 [1]. http://kafka.apachecn.org/documentation.html   
 [2]. kafka安装，https://www.jianshu.com/p/c74e0ec577b0
+[3]. kafka 数据可靠性深度解读，https://mp.weixin.qq.com/s/ItxFCz4DmAE9JfCgl-aA8w
