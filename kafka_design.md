@@ -324,11 +324,140 @@ HW和LEO。这里先介绍下LEO，LogEndOffset的缩写，表示每个partition
 ![](images/kafka生产者组件图.png)
 首先从创建ProducerRecord对象开始，对象中包含目标主题和要发送的内容，还可以指定键和分区。
 1. 把键和值序列化成字节数组
-2. 如果指定了分区，则直接使用指定的分区，否则会由分区器依据键值进行分区选择。会根据键值hash之后进行分区的选择。 
-    * 如果键值为null，则使用轮询算法将消息均衡的分布到各个分区上
-    * 如果键值不为空，则会对键值进行Hash，根据hash结果把消息映射到特定的分区上。（如果分区的数目发生改变，则新记录可能被写到其他分区上）
-    * 可以通过实现Partitioner接口，实现分区策略自定义
+2. 通过分区器进行分区的选择
 #### 3.2.2. 消费
+* 消费流程
+    1. 创建kafka消费者
+    2. 订阅主题：可以订阅单个主题或主题列表，也可以通过正则来匹配主题。
+    3. 轮询：无限循环
+
+### 3.3. 数据存取
+
+
+Kafka使用文件系统和操作系统的页缓存（page cache）分别存储和缓存消息，Kafka持久化消息到各个topic的partition文件时，是只追加的顺序写，充分利用了磁盘顺序访问快的特性，效率高。
+Kafka的数据存储设计是建立在对文件进行追加的基础上实现的，因为是顺序追加，通过O(1)的磁盘数据结构即可提供消息的持久化，并且这种结构对于即使是数以TB级别的消息存储也能够保持长时间的稳定性能。在理想情况下，只要磁盘空间足够大就一直可以追加消息。
+
+此外，Kafka也能够通过配置让用户自己决定已经落盘的持久化消息保存的时间，提供消息处理更为灵活的方式。
+
+
+
+使用文件系统和 pagecache 可以通过自动访问所有空闲内存，并且通过存储紧凑的字节结构而不是独立的对象，提高缓存容量利用率，并且不会产生额外的 GC 负担。
+此外，即使服务重新启动，缓存依旧可用。
+
+>这里给出了一个非常简单的设计：相比于维护尽可能多的 in-memory cache，并且在空间不足的时候匆忙将数据 flush 到文件系统，我们把这个过程倒过来。所有数据一开始就被写入到文件系统的持久化日志中，而不用在 cache 空间不足的时候 flush 到磁盘。实际上，这表明数据被转移到了内核的 pagecache 中。
+
+* 数据结构
+
+>一般消息系统使用的持久化数据结构通常是和 BTree 相关联的消费者队列或者其他用于存储消息源数据的通用随机访问数据结构。BTree 是最通用的数据结构，可以在消息系统能够支持各种事务性和非事务性语义。 虽然 BTree 的操作复杂度是 O(log N)，但成本也相当高。磁盘寻址是每10ms一跳，并且每个磁盘同时只能执行一次寻址，因此并行性受到了限制。 因此即使是少量的磁盘寻址也会很高的开销。由于存储系统将非常快的cache操作和非常慢的物理磁盘操作混合在一起，当数据随着 fixed cache 增加时，可以看到树的性能通常是非线性的——比如数据翻倍时性能下降不只两倍
+
+持久化队列可以建立在简单的读取和向文件后追加两种操作之上，这和日志解决方案相同。这种架构的优点在于所有的操作复杂度都是O(1)，而且读操作不会阻塞写操作，读操作之间也不会互相影响。
+
+### 3.4. 性能优化
+
+影响性能的两个主要因素：大量的小型 I/O 操作，以及过多的字节拷贝。
+
+#### 3.4.1. IO
+为了避免大量的小型 I/O 操作，kafka是建立在一个 “消息块” 的抽象基础上，合理将消息分组。 这使得网络请求将多个消息打包成一组，而不是每次发送一条消息，从而使整组消息分担网络中往返的开销，Consumer 每次获取多个大型有序的消息块。
+
+#### 3.4.2. 拷贝
+为了避免过多的字节拷贝，producer ，broker 和 consumer 都共享的标准化的二进制消息格式，这样数据块不用修改就能在他们之间传递。
+broker 维护的消息日志本身就是一个文件目录，每个文件都由一系列以相同格式写入到磁盘的消息集合组成，这种写入格式被 producer 和 consumer 共用。保持这种通用格式可以对一些很重要的操作进行优化。
+
+* 零拷贝
+
+零拷贝是消除了从内核空间到用户空间的来回复制，“zero-copy”这个词实际上是站在内核的角度来说的，并不是完全不会发生任何拷贝。[5]
+
+**传统的数据传输方法**
+
+  1. JVM向OS发出read()系统调用，触发上下文切换，从用户态切换到内核态。
+  2. 从外部存储（如硬盘）读取文件内容，通过直接内存访问（DMA）存入内核地址空间的缓冲区。
+  3. 将数据从内核缓冲区拷贝到用户空间缓冲区，read()系统调用返回，并从内核态切换回用户态。
+  4. JVM向OS发出write()系统调用，触发上下文切换，从用户态切换到内核态。
+  5. 将数据从用户缓冲区拷贝到内核中与目的地Socket关联的缓冲区。
+  6. 数据最终经由Socket通过DMA传送到硬件（如网卡）缓冲区，write()系统调用返回，并从内核态切换回用户态。
+
+具体流程图如下：
+![](images/传统方法的流程框图.png)
+
+零拷贝机制就实现了数据直接从内核缓冲区直接送入Socket缓冲区。不过零拷贝需要由操作系统直接支持，不同OS有不同的实现方法。
+
+![](images/零拷贝方法的时序图.png)
+
+大多数Unix-like系统都是提供了一个名为sendfile()的系统调用，Linux manual page，就有这样的描述：
+
+```
+sendfile() copies data between one file descriptor and another.
+Because this copying is done within the kernel, sendfile() is more efficient than the combination of read(2) and write(2), which would require transferring data to and from user space.
+```
+
+使用 sendfile 方法，可以允许操作系统将数据从 pagecache 直接发送到网络，这样避免重新复制数据。所以这种优化方式，只需要最后一步的copy操作，将数据复制到 NIC 缓冲区。
+
+
+* 压缩
+Kafka 以高效的批处理格式支持一批消息可以压缩在一起发送到服务器。这批消息将以压缩格式写入，并且在日志中保持压缩，只会在 consumer 消费时解压缩。
+
+Kafka 支持 GZIP，Snappy 和 LZ4 压缩协议，更多有关压缩的资料参看 https://cwiki.apache.org/confluence/display/KAFKA/Compression。
+
+
+### 3.5. 流程设计
+
+#### 3.5.1. 生产者
+* 负载均衡
+创建ProducerRecord时，如果指定了分区，则直接使用指定的分区。
+否则会由分区器依据键值进行分区选择。
+  * 如果键值为null，则使用轮询算法将消息均衡的分布到各个分区上
+  * 如果键值不为空，则会对键值进行Hash，根据hash结果把消息映射到特定的分区上。（一般是对分区数取余，如果分区的数目发生改变，则新记录可能被写到其他分区上）
+  * 可以通过实现Partitioner接口，实现分区策略自定义
+
+```java
+import java.util.List;
+import java.util.Map;
+ 
+import org.apache.kafka.clients.producer.Partitioner;
+import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.PartitionInfo;
+ 
+public class MyPartition implements Partitioner {
+ 
+	public MyPartition() {
+		// TODO Auto-generated constructor stub
+	}
+ 
+	@Override
+	public void configure(Map<String, ?> configs) {
+		// TODO Auto-generated method stub
+ 
+	}
+ 
+	@Override
+	public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster) {
+		// TODO Auto-generated method stub
+		List<PartitionInfo> partitions = cluster.partitionsForTopic(topic);
+		int numPartitions = partitions.size();
+
+    if (((String)key)).equals("Test")){
+      return numPartitions;
+    }
+
+		return Math.abs(key.hashCode() % (numPartitions-1));
+	}
+ 
+	@Override
+	public void close() {
+		// TODO Auto-generated method stub
+ 
+	}
+ 
+}
+
+
+```
+
+* 缓存：详见[配置](http://kafka.apachecn.org/documentation.html#producerconfigs)
+
+#### 3.5.2. 消费者
+
+
 * Kafka消费者
 Kafka消费者对象订阅主题并接收Kafka的消息，然后验证消息并保存结果。
 * Kafka消费者组
@@ -423,63 +552,7 @@ left to right direction
 
 作为`群组协调器`的broker会通过消费者的心跳来统计消费者状态，以判断是否需要触发再均衡。
 
-* 消费流程
-    1. 创建kafka消费者
-    2. 订阅主题：可以订阅单个主题或主题列表，也可以通过正则来匹配主题。
-    3. 轮询：无限循环
-
-### 3.3. 数据存取
-
-
-Kafka使用文件系统和操作系统的页缓存（page cache）分别存储和缓存消息，Kafka持久化消息到各个topic的partition文件时，是只追加的顺序写，充分利用了磁盘顺序访问快的特性，效率高。
-Kafka的数据存储设计是建立在对文件进行追加的基础上实现的，因为是顺序追加，通过O(1)的磁盘数据结构即可提供消息的持久化，并且这种结构对于即使是数以TB级别的消息存储也能够保持长时间的稳定性能。在理想情况下，只要磁盘空间足够大就一直可以追加消息。
-
-此外，Kafka也能够通过配置让用户自己决定已经落盘的持久化消息保存的时间，提供消息处理更为灵活的方式。
-
-
-
-使用文件系统和 pagecache 可以通过自动访问所有空闲内存，并且通过存储紧凑的字节结构而不是独立的对象，提高缓存容量利用率，并且不会产生额外的 GC 负担。
-此外，即使服务重新启动，缓存依旧可用。
-
->这里给出了一个非常简单的设计：相比于维护尽可能多的 in-memory cache，并且在空间不足的时候匆忙将数据 flush 到文件系统，我们把这个过程倒过来。所有数据一开始就被写入到文件系统的持久化日志中，而不用在 cache 空间不足的时候 flush 到磁盘。实际上，这表明数据被转移到了内核的 pagecache 中。
-
-* 数据结构
-
->一般消息系统使用的持久化数据结构通常是和 BTree 相关联的消费者队列或者其他用于存储消息源数据的通用随机访问数据结构。BTree 是最通用的数据结构，可以在消息系统能够支持各种事务性和非事务性语义。 虽然 BTree 的操作复杂度是 O(log N)，但成本也相当高。磁盘寻址是每10ms一跳，并且每个磁盘同时只能执行一次寻址，因此并行性受到了限制。 因此即使是少量的磁盘寻址也会很高的开销。由于存储系统将非常快的cache操作和非常慢的物理磁盘操作混合在一起，当数据随着 fixed cache 增加时，可以看到树的性能通常是非线性的——比如数据翻倍时性能下降不只两倍
-
-持久化队列可以建立在简单的读取和向文件后追加两种操作之上，这和日志解决方案相同。这种架构的优点在于所有的操作复杂度都是O(1)，而且读操作不会阻塞写操作，读操作之间也不会互相影响。
-
-### 3.4. 性能优化
-
-影响性能的两个主要因素：大量的小型 I/O 操作，以及过多的字节拷贝。
-
-#### 3.4.1. IO
-为了避免大量的小型 I/O 操作，kafka是建立在一个 “消息块” 的抽象基础上，合理将消息分组。 这使得网络请求将多个消息打包成一组，而不是每次发送一条消息，从而使整组消息分担网络中往返的开销，Consumer 每次获取多个大型有序的消息块。
-
-#### 3.4.2. 零拷贝（Linux用户态和内核态）10min
-为了避免过多的字节拷贝，producer ，broker 和 consumer 都共享的标准化的二进制消息格式，这样数据块不用修改就能在他们之间传递。
-broker 维护的消息日志本身就是一个文件目录，每个文件都由一系列以相同格式写入到磁盘的消息集合组成，这种写入格式被 producer 和 consumer 共用。保持这种通用格式可以对一些很重要的操作进行优化: 
-
-持久化日志块的网络传输。
-  使用 sendfile 方法，可以允许操作系统将数据从 pagecache 直接发送到网络，这样避免重新复制数据。所以这种优化方式，只需要最后一步的copy操作，将数据复制到 NIC 缓冲区。
-  **sendfile**
-  **使用上面提交的 zero-copy（零拷贝）** https://developer.ibm.com/technologies/java/
-  pagecache 和 sendfile 的组合使用意味着，在一个kafka集群中，大多数 consumer 消费时，您将看不到磁盘上的读取活动，因为数据将完全由缓存提供。
-
-* 压缩
-Kafka 以高效的批处理格式支持一批消息可以压缩在一起发送到服务器。这批消息将以压缩格式写入，并且在日志中保持压缩，只会在 consumer 消费时解压缩。
-
-Kafka 支持 GZIP，Snappy 和 LZ4 压缩协议，更多有关压缩的资料参看 https://cwiki.apache.org/confluence/display/KAFKA/Compression。
-
------30min----
-
-### 3.5. 流程设计
-
-#### 3.5.1. 生产者
-* 负载均衡
-* 缓存：详见[配置](http://kafka.apachecn.org/documentation.html#producerconfigs)
-
-#### 3.5.2. 消费者
+* 
 pull-based 系统有一个很好的特性， 那就是当 consumer 速率落后于 producer 时，可以在适当的时间赶上来。还可以通过使用某种 backoff 协议来减少这种现象：即 consumer 可以通过 backoff 表示它已经不堪重负了，然而通过获得负载情况来充分使用 consumer（但永远不超载）
 
 简单的 pull-based 系统的不足之处在于：如果 broker 中没有数据，consumer 可能会在一个紧密的循环中结束轮询，实际上 busy-waiting 直到数据到来。为了避免 busy-waiting，我们在 pull 请求中加入参数，使得 consumer 在一个“long pull”中阻塞等待，直到数据到来（还可以选择等待给定字节长度的数据来确保传输长度）。
@@ -519,7 +592,7 @@ consumer 可以回退到之前的 offset 来再次消费之前的数据，这个
 
 数据流转图，（汇总，目前图比较粗。细化到partition，以及zookeeper）
 
->## 配置
+> 配置
 
 >http://kafka.apachecn.org/documentation.html#configuration
 >给出建议配置
@@ -538,3 +611,4 @@ http://kafka.apachecn.org/documentation.html#design
 [2]. kafka安装，https://www.jianshu.com/p/c74e0ec577b0
 [3]. kafka 数据可靠性深度解读，https://mp.weixin.qq.com/s/ItxFCz4DmAE9JfCgl-aA8w
 [4]. Kafka文件存储机制那些事，https://tech.meituan.com/2015/01/13/kafka-fs-design-theory.html
+[5]. 零拷贝（Zero-copy）及其应用详解，https://www.jianshu.com/p/193cae9cbf07
