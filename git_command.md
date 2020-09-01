@@ -48,6 +48,19 @@ git branch -a
 
 #### 2.8.2. 新建本地分支
     git checkout -b dbg_lichen_star
+
+### 根据tag创建分支
+1.执行:git origin fetch 获得最新.
+
+2.通过:git branch 会根据tag创建新的分支.
+
+例如:git branch newbranch vtest.1.0.FINAL 
+会以tag vtest.1.0.FINAL创建新的分支newbranch;
+
+3.可以通过git checkout newbranch 切换到新的分支.
+
+4.通过 git push origin newbranch 把本地创建的分支提交到远程仓库.
+
 #### 2.8.3. 本地分支push到远端
     git push origin dbg_lichen_star:dbg_lichen_star
 #### 2.8.3. 建立远程分支连接
