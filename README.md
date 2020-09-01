@@ -5,7 +5,7 @@ MainPage： https://emilyma011.github.io/doc
 
 ## kafka
 * [kafka_design](./kafka_design)
-* [testForSubdir](./kafka/testForSubdir)
+* [testForSubdir](./kafka/testForSubdir.md)
 
 ## markdown
 * [plantuml](./plantuml)
