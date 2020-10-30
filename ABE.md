@@ -65,6 +65,6 @@ key-policy attributed-based encryption
 * CP-ABE
 cipher-policy attributed-based encryption
 密文与访问策略相关联，密钥则是与属性相关
-
+ 
 
 
