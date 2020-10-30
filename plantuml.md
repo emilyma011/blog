@@ -2,9 +2,29 @@
 ```plantuml
 
 @startuml
+
 a->b
 @enduml
 ```
+
+
+```plantuml
+@startuml
+left to right direction
+skinparam monochrome true
+skinparam shadowing false
+(*) -->"1. "
+-->"2. "
+--> "3. " 
+--> ===B1===
+===B1=== --> "4. " 
+--> ===B2===
+===B1=== --> "5. " 
+--> ===B2===
+--> (*)
+@enduml
+```
+
 
 ```plantuml, autorun
 
@@ -14,7 +34,7 @@ a->b
 ```
 
 # mermaid
-```mermaid,autorun
+```mermaid
 %% Example of sequence diagram
   sequenceDiagram
     Alice->>Bob: Hello Bob, how are you?
@@ -31,7 +51,7 @@ a->b
 
 ## Flowchart
 
-```mermaid,autorun
+```mermaid
   graph LR
     A[Hard edge] -->B(Round edge)
     B --> C{Decision}
@@ -42,7 +62,7 @@ a->b
 ## Gantt diagrams
 
 
-```mermaid,autorun
+```mermaid
   gantt
     title A Gantt Diagram
     dateFormat  YYYY-MM-DD
