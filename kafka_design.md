@@ -95,7 +95,7 @@ Kafka的命名是来源于Franz Kafka。Jay Kreps解释： 我想既然Kafka是�
     修改$KAFKA_HOME/config 目录下的server.properties文件，为了便于后续集群环境搭建的配置， 需要保证同一个集群下 broker.id要唯一，因此这里手动配置 broker.id, 直接保持与ZooKeeper的myid值一致， 同时配置日志存储路径。server.properties修改的配置 如下 :
     >broker.id=l #指定代理的 id     
     >log.dirs=/usr/local/kafka/log  #指定 Log 存储路径  
-    >zookeeper.connect=10.200.195.75:2181,server-2:2181,server-3:2181   
+    >zookeeper.connect=10.1.1.1:2181,server-2:2181,server-3:2181   
 
     在三台机器上(或者同一台机器三个路径，以端口区分)分别修改配置文件server.properties, 并修改对应的broker.id.
 
@@ -152,7 +152,7 @@ Kafka的命名是来源于Franz Kafka。Jay Kreps解释： 我想既然Kafka是�
   
 * 往topic发送消息：
   ```
-  kafka-console-producer.sh --broker-list 10.200.195.75:9092 --topic my-replicated-topic
+  kafka-console-producer.sh --broker-list 10.1.1.1:9092 --topic my-replicated-topic
 
   >1
   >2
@@ -162,7 +162,7 @@ Kafka的命名是来源于Franz Kafka。Jay Kreps解释： 我想既然Kafka是�
 
 * 消费这些消息：
   ```
-  kafka-console-consumer.sh --bootstrap-server 10.200.195.75:9092 --from-beginning --topic my-replicated-topic
+  kafka-console-consumer.sh --bootstrap-server 10.1.1.1:9092 --from-beginning --topic my-replicated-topic
 
   1
   2
@@ -211,7 +211,7 @@ Kafka的命名是来源于Franz Kafka。Jay Kreps解释： 我想既然Kafka是�
   虽然最初负责续写消息的leader down掉了，但之前的消息还是可以消费的：
 
   ```
-  [root@centos7g local]# kafka-console-consumer.sh --bootstrap-server 10.200.195.75:9092 --from-beginning --topic my-replicated-topic
+  [root@centos7g local]# kafka-console-consumer.sh --bootstrap-server 10.1.1.1:9092 --from-beginning --topic my-replicated-topic
   1
   2
   test1
